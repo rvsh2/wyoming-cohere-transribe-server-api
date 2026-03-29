@@ -1,35 +1,35 @@
 # wyoming-transcribe
 
-Serwer ASR dla Home Assistant oparty o protokol Wyoming i model `CohereLabs/cohere-transcribe-03-2026`.
+ASR server for Home Assistant built around the Wyoming protocol and the `CohereLabs/cohere-transcribe-03-2026` model.
 
-Glownym interfejsem jest serwer `wyoming`. `server.py` zostal zachowany jako pomocniczy HTTP debug server kompatybilny z podstawowymi requestami `whisper.cpp`.
+The main interface is the Wyoming server. `server.py` is still available as a small HTTP debug server with basic `whisper.cpp`-style compatibility.
 
-## Co Jest W Repo
+## What Is In This Repository
 
-- `cohere_wyoming/` - wspolny runtime, backend transkrypcji i handler Wyoming
-- `python -m cohere_wyoming` - glowny serwer dla Home Assistant
-- `python server.py` - pomocniczy HTTP debug server
-- frontend HTTP z uploadem pliku i nagrywaniem z mikrofonu
-- Docker i Compose pod uruchomienie kontenerowe
-- testy jednostkowe dla backendu, HTTP i handlera Wyoming
+- `cohere_wyoming/` - shared runtime, transcription backend, and Wyoming handler
+- `python -m cohere_wyoming` - main server for Home Assistant
+- `python server.py` - optional HTTP debug server
+- HTTP frontend for file upload and microphone recording
+- Docker and Compose setup
+- unit tests for backend, HTTP, and Wyoming handler flows
 
-## Wymagania
+## Requirements
 
 - Python 3.11+
-- `uv` jako podstawowy manager zaleznosci
-- GPU jest preferowane, ale CPU fallback jest wspierany
-- przy modelu gated z Hugging Face: `HF_TOKEN`
+- `uv` as the primary dependency manager
+- GPU is preferred, but CPU fallback is supported
+- `HF_TOKEN` if you are using the gated Hugging Face model
 
-## Szybki Start
+## Quick Start
 
-### 1. Instalacja przez uv
+### 1. Install with uv
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv venv
 UV_CACHE_DIR=/tmp/uv-cache uv sync
 ```
 
-### 2. Start serwera Wyoming
+### 2. Start the Wyoming server
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m cohere_wyoming \
@@ -37,27 +37,27 @@ UV_CACHE_DIR=/tmp/uv-cache uv run python -m cohere_wyoming \
   --language pl
 ```
 
-Domyslny port dla integracji z Home Assistant to `10300`.
+The default port for Home Assistant integration is `10300`.
 
-### 3. Opcjonalny HTTP debug server
+### 3. Optional HTTP debug server
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python server.py --host 0.0.0.0 --port 8080 --language pl
 ```
 
-Tryb HTTP zostal zachowany jako narzedzie developerskie. Frontend obsluguje upload pliku, nagrywanie z mikrofonu i formaty dekodowane przez `ffmpeg`.
+The HTTP mode is intended as a developer tool. The frontend supports file upload, browser microphone recording, and formats decoded through the `ffmpeg` fallback.
 
 ## Docker
 
-Najprostsza opcja:
+The simplest option:
 
 ```bash
 docker compose up --build -d
 ```
 
-`compose.yml` uruchamia kontener Wyoming na porcie `10300` i zawiera gotowy preset VAD pod Home Assistant.
+`compose.yml` runs the Wyoming service on port `10300` and includes a ready-to-use VAD preset for Home Assistant.
 
-Mozliwy jest tez start reczny:
+Manual container start is also possible:
 
 ```bash
 docker build -t wyoming-transcribe .
@@ -68,17 +68,17 @@ docker run --gpus all -p 10300:10300 \
   --language pl
 ```
 
-Obraz Dockera korzysta z `uv.lock`, wiec build jest zgodny z lockowanym zestawem zaleznosci.
+The Docker image uses `uv.lock`, so builds stay aligned with the locked dependency set.
 
 ## Home Assistant
 
-Docelowy scenariusz:
+Typical setup:
 
-1. uruchomic serwer Wyoming
-2. dodac go w Home Assistant jako zewnetrzna usluge Wyoming ASR
-3. wskazac URI w stylu `tcp://host:10300`
+1. Start the Wyoming server.
+2. Add it in Home Assistant as an external Wyoming ASR service.
+3. Use a URI like `tcp://host:10300`.
 
-Aktualnie obslugiwane eventy:
+Currently supported events:
 
 - `describe`
 - `transcribe`
@@ -86,21 +86,21 @@ Aktualnie obslugiwane eventy:
 - `audio-chunk`
 - `audio-stop`
 
-Transkrypcja jest wykonywana po odebraniu calej wypowiedzi, po `audio-stop`.
+Transcription runs after the full utterance is received, on `audio-stop`.
 
-## Wykrywanie Ciszy i Szumu
+## Silence and Noise Handling
 
-Backend ma kilka warstw ochrony przed halucynacjami na ciszy:
+The backend has several layers to reduce hallucinations on silence:
 
-- preferowanie lokalnego cache Hugging Face przed pobraniem z sieci
-- fallback z CUDA do CPU, gdy zaladowanie modelu na GPU sie nie powiedzie
-- wykrywanie efektywnej ciszy przez szybki filtr energii (`RMS/peak`)
-- `silero-vad` jako dokladniejszy detektor mowy
-- dodatkowy filtr `speech RMS` i `speech-to-noise ratio`, zeby odrzucac bardzo ciche dzwieki bliskie szumowi tla
+- prefer local Hugging Face cache before network download
+- fall back from CUDA to CPU if GPU model loading fails
+- detect effective silence with a fast energy-based filter (`RMS/peak`)
+- use `silero-vad` as a more precise speech detector
+- apply additional `speech RMS` and `speech-to-noise ratio` checks to reject very quiet sounds close to background noise
 
-Jesli `silero-vad` nie da sie zaladowac, serwer przechodzi na fallback i nadal dziala z prostszym detektorem ciszy.
+If `silero-vad` cannot be loaded, the server falls back to the simpler silence detector and keeps running.
 
-Najwazniejsze zmienne srodowiskowe:
+Important environment variables:
 
 - `VAD_ENABLED=true`
 - `VAD_THRESHOLD=0.5`
@@ -113,12 +113,12 @@ Najwazniejsze zmienne srodowiskowe:
 - `VAD_MIN_SPEECH_TO_NOISE_RATIO=3.0`
 - `VAD_USE_ONNX=false`
 
-Przydatne opcje CLI:
+Useful CLI options:
 
 - `--disable-vad`
 - `--vad-threshold 0.6`
 
-Polecany preset startowy dla Home Assistant:
+Recommended starting preset for Home Assistant:
 
 ```env
 VAD_ENABLED=true
@@ -132,32 +132,32 @@ VAD_MIN_SPEECH_RMS=0.014
 VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
 ```
 
-Jak stroic w praktyce:
+Practical tuning guidance:
 
-- jesli nadal pojawiaja sie halucynacje przy ciszy lub szumie, podnies `VAD_THRESHOLD`
-- jesli przepuszcza bardzo ciche samogloski albo szum przypominajacy glos, podnies `VAD_MIN_SPEECH_RMS`
-- jesli przepuszcza dzwieki tylko minimalnie glosniejsze od tla, podnies `VAD_MIN_SPEECH_TO_NOISE_RATIO`
-- jesli ucina bardzo krotkie komendy, obniz `VAD_MIN_TOTAL_SPEECH_MS` i `VAD_MIN_MAX_SEGMENT_MS`
-- jesli obcina poczatek lub koniec wypowiedzi, zwieksz `VAD_SPEECH_PAD_MS`
+- if you still get hallucinations on silence or noise, increase `VAD_THRESHOLD`
+- if very quiet vowels or speech-like noise still pass through, increase `VAD_MIN_SPEECH_RMS`
+- if sounds only slightly louder than background noise still pass through, increase `VAD_MIN_SPEECH_TO_NOISE_RATIO`
+- if short commands get cut off, lower `VAD_MIN_TOTAL_SPEECH_MS` and `VAD_MIN_MAX_SEGMENT_MS`
+- if the start or end of speech gets clipped, increase `VAD_SPEECH_PAD_MS`
 
-## Obslugiwane Jezyki
+## Supported Languages
 
 `en`, `fr`, `de`, `it`, `es`, `pt`, `el`, `nl`, `pl`, `zh`, `ja`, `ko`, `vi`, `ar`
 
-## Ograniczenia Aktualnej Wersji
+## Current Limitations
 
-- brak partial transcripts
-- brak autodetekcji jezyka
-- brak `zeroconf`
-- brak natywnego streamingu wynikow
-- HTTP zostaje jako warstwa pomocnicza, nie glowna integracja
+- no partial transcripts
+- no language auto-detection
+- no `zeroconf`
+- no native streaming results
+- HTTP remains a helper/debug layer, not the primary integration path
 
-## Testy
+## Tests
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
 ```
 
-## Zrodlo Wzorca
+## Reference
 
 - `wyoming-faster-whisper`: https://github.com/rhasspy/wyoming-faster-whisper
