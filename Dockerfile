@@ -27,4 +27,4 @@ COPY server.py .
 EXPOSE 8080
 
 ENTRYPOINT ["python3", "server.py"]
-CMD ["--host", "0.0.0.0", "--port", "8080", "--trust-remote-code"]
+CMD ["--host", "0.0.0.0", "--port", "8080"]

@@ -1,24 +1,35 @@
 import asyncio
 import io
 import json
+import sys
 import unittest
 import wave
 from unittest.mock import patch
 
 from fastapi import HTTPException
+import numpy as np
 
 import server
 
 
-def make_wav_bytes(duration_s: float = 0.1, sample_rate: int = 16000) -> bytes:
+def make_wav_bytes(
+    duration_s: float = 0.1,
+    sample_rate: int = 16000,
+    channels: int = 1,
+) -> bytes:
     """Create a tiny valid WAV fixture for endpoint tests."""
     frames = int(duration_s * sample_rate)
+    t = np.arange(frames, dtype=np.float32) / sample_rate
+    signal = 0.25 * np.sin(2 * np.pi * 440.0 * t)
+    pcm = np.clip(signal * 32767.0, -32768, 32767).astype(np.int16)
+    if channels > 1:
+        pcm = np.repeat(pcm[:, None], channels, axis=1)
     audio = io.BytesIO()
     with wave.open(audio, "wb") as wav_file:
-        wav_file.setnchannels(1)
+        wav_file.setnchannels(channels)
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
-        wav_file.writeframes(b"\x00\x00" * frames)
+        wav_file.writeframes(pcm.tobytes())
     return audio.getvalue()
 
 
@@ -225,6 +236,28 @@ class CohereTranscribeApiTests(unittest.TestCase):
             )
 
         self.assertEqual(self.decode_json_response(response)["text"], "compat ok")
+
+    def test_audio_preprocessing_resamples_mono_and_stereo_wav(self):
+        stereo_44k = make_wav_bytes(sample_rate=44100, channels=2)
+        mono_22k = make_wav_bytes(sample_rate=22050, channels=1)
+
+        stereo_audio, stereo_sr = server.read_audio_to_numpy(stereo_44k, "stereo.wav")
+        mono_audio, mono_sr = server.read_audio_to_numpy(mono_22k, "mono.wav")
+
+        self.assertEqual(stereo_sr, 16000)
+        self.assertEqual(mono_sr, 16000)
+        self.assertEqual(stereo_audio.ndim, 1)
+        self.assertEqual(mono_audio.ndim, 1)
+        self.assertGreater(len(stereo_audio), 0)
+        self.assertGreater(len(mono_audio), 0)
+
+    def test_cli_no_longer_exposes_trust_remote_code_flags(self):
+        argv = ["server.py"]
+        with patch.object(sys, "argv", argv):
+            args = server.parse_args()
+
+        self.assertFalse(hasattr(args, "trust_remote_code"))
+        self.assertFalse(hasattr(args, "no_trust_remote_code"))
 
 
 if __name__ == "__main__":

@@ -22,6 +22,14 @@ pip install -r requirements.txt
 python server.py --host 0.0.0.0 --port 8080
 ```
 
+The production server uses the native `AutoProcessor` + `AutoModelForSpeechSeq2Seq` path with `transformers==5.4.0` and does not use `trust_remote_code`.
+
+Incoming audio is normalized before inference:
+
+- stereo or multi-channel audio is mixed down to mono
+- input sample rates such as `16 kHz`, `22.05 kHz`, `44.1 kHz`, and `48 kHz` are resampled to `16 kHz`
+- WAV, MP3, FLAC, OGG and other decodable formats are accepted through `soundfile` with a `librosa` fallback
+
 With explicit options:
 
 ```bash
@@ -29,8 +37,7 @@ python server.py \
   --model CohereLabs/cohere-transcribe-03-2026 \
   --host 0.0.0.0 \
   --port 8080 \
-  --language en \
-  --trust-remote-code
+  --language en
 ```
 
 ### Docker / Compose
@@ -67,7 +74,7 @@ Main `whisper.cpp`-compatible endpoint.
 
 | Parameter | Type | Default | Notes |
 |-----------|------|---------|-------|
-| `file` | file | required | WAV, MP3, FLAC, OGG and other decodable formats |
+| `file` | file | required | WAV, MP3, FLAC, OGG and other decodable formats; audio is normalized to mono 16 kHz before inference |
 | `temperature` | float | `0.0` | Passed through to transcription |
 | `temperature_inc` | float | `0.2` | Accepted for compatibility, not applied |
 | `response_format` | string | `json` | `json`, `text`, `verbose_json`, `srt`, `vtt` |
@@ -160,8 +167,6 @@ Returns a small HTML status page with endpoints, device/model info, and compatib
 --host HOST
 --port PORT
 -m, --model MODEL
---trust-remote-code
---no-trust-remote-code
 -l, --language LANG
 -t, --threads N
 -ng, --no-gpu
@@ -170,7 +175,7 @@ Returns a small HTML status page with endpoints, device/model info, and compatib
 Defaults:
 
 - GPU is auto-detected when available
-- `trust_remote_code=True` is the default path
+- native transformers loading is the only production path
 - `language=auto` is treated as the configured default language
 
 ## GPU Compatibility
@@ -218,6 +223,8 @@ curl http://127.0.0.1:8080/
 - The Hugging Face model may require accepted license terms and cached model access in your environment.
 - CPU fallback is supported, but will be slower.
 - If startup fails with `401 Unauthorized` or `GatedRepoError`, you need a Hugging Face account with access to `CohereLabs/cohere-transcribe-03-2026` and a valid `HF_TOKEN`.
+- The production image is pinned to `transformers==5.4.0` because this model works correctly in native mode on that stack.
+- The server resamples all incoming audio to `16 kHz` mono before inference, so mixed source sample rates are expected and supported.
 - If startup falls back to CPU with a CUDA driver warning, either the host driver is too old for the installed PyTorch build or the container is not seeing the GPUs correctly.
 
 ## License

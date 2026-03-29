@@ -51,7 +51,7 @@ processor = None
 device = None
 model_id: str = ""
 default_language: str = "en"
-use_trust_remote_code: bool = True
+model_backend: str = "native"
 IGNORED_WHISPER_PARAMS = ("temperature_inc", "prompt", "encode", "no_timestamps")
 
 # Cohere Transcribe supported languages
@@ -73,14 +73,14 @@ LANGUAGE_ALIASES = {
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
-def load_model(model_name: str, trust_remote_code: bool = True):
+def load_model(model_name: str):
     """Load the Cohere Transcribe model and processor."""
-    global model, processor, device, model_id, use_trust_remote_code
+    global model, processor, device, model_id, model_backend
 
     model_id = model_name
-    use_trust_remote_code = trust_remote_code
+    model_backend = "native"
 
-    logger.info(f"Loading model: {model_name} (trust_remote_code={trust_remote_code})")
+    logger.info(f"Loading model: {model_name} (backend={model_backend})")
     start = time.time()
 
     # Determine device
@@ -91,34 +91,16 @@ def load_model(model_name: str, trust_remote_code: bool = True):
         device = torch.device("cpu")
         logger.info("Using CPU device")
 
-    if trust_remote_code:
-        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
-        processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            model_name, trust_remote_code=True
-        ).to(device)
-        model.eval()
-    else:
-        try:
-            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
-            processor = AutoProcessor.from_pretrained(model_name)
-            model = CohereAsrForConditionalGeneration.from_pretrained(
-                model_name, device_map="auto"
-            )
-        except (ImportError, OSError) as e:
-            logger.warning(
-                f"Native transformers loading failed ({e}), falling back to trust_remote_code=True"
-            )
-            from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
-            processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-            model = AutoModelForSpeechSeq2Seq.from_pretrained(
-                model_name, trust_remote_code=True
-            ).to(device)
-            model.eval()
-            use_trust_remote_code = True
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=False)
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_name, trust_remote_code=False
+    ).to(device)
+    model.eval()
 
     elapsed = time.time() - start
-    logger.info(f"Model loaded in {elapsed:.1f}s")
+    logger.info(f"Model loaded in {elapsed:.1f}s using backend={model_backend}")
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +326,7 @@ def transcribe_audio(
     Transcribe audio using Cohere Transcribe model.
     Returns a dict with text, language, duration.
     """
-    global model, processor, device, use_trust_remote_code
+    global model, processor, device, model_backend
 
     if model is None or processor is None:
         raise RuntimeError("Model not loaded")
@@ -352,49 +334,37 @@ def transcribe_audio(
     duration_s = len(audio_data) / sr
     start = time.time()
 
-    if use_trust_remote_code and hasattr(model, "transcribe"):
-        # Use the trust_remote_code transcribe() method
-        texts = model.transcribe(
-            processor=processor,
-            audio_arrays=[audio_data],
-            sample_rates=[sr],
+    inputs = processor(
+        audio_data,
+        sampling_rate=sr,
+        return_tensors="pt",
+        language=language,
+    )
+    audio_chunk_index = inputs.get("audio_chunk_index", None)
+    inputs.to(model.device, dtype=model.dtype)
+
+    with torch.no_grad():
+        outputs = model.generate(**inputs, max_new_tokens=256)
+
+    if audio_chunk_index is not None:
+        text = processor.decode(
+            outputs,
+            skip_special_tokens=True,
+            audio_chunk_index=audio_chunk_index,
             language=language,
         )
-        text = texts[0] if texts else ""
     else:
-        # Use native transformers pipeline
-        inputs = processor(
-            audio_data,
-            sampling_rate=sr,
-            return_tensors="pt",
-            language=language,
-        )
-        audio_chunk_index = inputs.get("audio_chunk_index", None)
-        inputs.to(model.device, dtype=model.dtype)
+        text = processor.decode(outputs, skip_special_tokens=True)
 
-        with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=256)
-
-        if audio_chunk_index is not None:
-            text = processor.decode(
-                outputs,
-                skip_special_tokens=True,
-                audio_chunk_index=audio_chunk_index,
-                language=language,
-            )
-            if isinstance(text, list):
-                text = text[0]
-        else:
-            text = processor.decode(outputs, skip_special_tokens=True)
-            if isinstance(text, list):
-                text = text[0]
+    if isinstance(text, list):
+        text = text[0]
 
     elapsed = time.time() - start
     rtfx = duration_s / elapsed if elapsed > 0 else 0
 
     logger.info(
         f"Transcribed {duration_s:.1f}s audio in {elapsed:.1f}s "
-        f"(RTFx: {rtfx:.1f}x) lang={language}"
+        f"(RTFx: {rtfx:.1f}x) lang={language} backend={model_backend}"
     )
 
     return {
@@ -491,6 +461,7 @@ async def index():
         <h2>📊 Status</h2>
         <p>Model: <code>{model_id}</code></p>
         <p>Device: <code>{device}</code></p>
+        <p>Backend: <code>{model_backend}</code></p>
         <p>Status: <span class="status">● Running</span></p>
     </div>
 
@@ -608,7 +579,7 @@ async def load(
         raise HTTPException(status_code=400, detail="No model path provided")
 
     try:
-        load_model(model_path.strip(), trust_remote_code=use_trust_remote_code)
+        load_model(model_path.strip())
         return JSONResponse({
             "status": "ok",
             "model": model_path.strip(),
@@ -637,11 +608,6 @@ def parse_args():
     parser.add_argument("-m", "--model", type=str,
                         default="CohereLabs/cohere-transcribe-03-2026",
                         help="HuggingFace model ID or local path")
-    parser.add_argument("--trust-remote-code", action="store_true", default=True,
-                        help="Use trust_remote_code=True for model loading (default: True)")
-    parser.add_argument("--no-trust-remote-code", action="store_true", default=False,
-                        help="Disable trust_remote_code")
-
     # Transcription defaults
     parser.add_argument("-l", "--language", type=str, default="en",
                         help="Default spoken language (ISO 639-1 code)")
@@ -662,10 +628,6 @@ def main():
 
     # Set default language
     default_language = resolve_language(args.language)
-
-    # Handle trust_remote_code flag
-    if args.no_trust_remote_code:
-        args.trust_remote_code = False
 
     # Set torch threads
     torch.set_num_threads(args.threads)
@@ -689,7 +651,7 @@ def main():
     print()
 
     # Load model
-    load_model(args.model, trust_remote_code=args.trust_remote_code)
+    load_model(args.model)
 
     # Start server
     logger.info(f"Starting server on {args.host}:{args.port}")

@@ -7,7 +7,7 @@ Projekt ma już działające MVP: serwer FastAPI, endpointy kompatybilne ścież
 Najlepszy docelowy kierunek:
 - zachować obecny model `CohereLabs/cohere-transcribe-03-2026`;
 - domyślnie zostawić auto-detekcję GPU z opcją CPU fallback;
-- domyślnie używać `trust_remote_code=True`, bo to najlepiej pasuje do obecnej implementacji i minimalizuje ryzyko problemów z ładowaniem modelu;
+- używać natywnej ścieżki `transformers==5.4.0` bez `trust_remote_code=True`;
 - utrzymać Dockerfile i `compose.yml`, bo projekt już jest przygotowany pod uruchamianie kontenerowe.
 
 ## Implementation Changes
@@ -24,10 +24,12 @@ Najlepszy docelowy kierunek:
 
 - Uporządkować kod serwera wokół trzech odpowiedzialności:
   ładowanie modelu, dekodowanie audio, warstwa HTTP/formatowanie odpowiedzi.
-- Zachować obecny przepływ ładowania modelu:
-  `trust_remote_code=True` jako domyślna ścieżka, z fallbackiem do natywnego ładowania tylko jeśli jest stabilny i nie komplikuje kodu.
+- Utrzymać natywny przepływ ładowania modelu:
+  `AutoProcessor` + `AutoModelForSpeechSeq2Seq` na `transformers==5.4.0` bez `trust_remote_code=True`.
 - Utrzymać auto-detekcję GPU jako domyślne zachowanie.
 - Zachować opcję `--no-gpu` dla środowisk CPU-only.
+- Utrzymać preprocessing audio po stronie serwera:
+  downmix do mono i resampling do `16 kHz` niezależnie od wejściowego sample rate.
 - Upewnić się, że błędy wejścia i błędy modelu są mapowane do przewidywalnych kodów HTTP:
   pusty plik, nieobsługiwany format, brak modelu, błąd transkrypcji, błąd przeładowania modelu.
 
@@ -65,8 +67,6 @@ Najlepszy docelowy kierunek:
 - `--host`
 - `--port`
 - `--model`
-- `--trust-remote-code`
-- `--no-trust-remote-code`
 - `--language`
 - `--threads`
 - `--no-gpu`
@@ -104,12 +104,13 @@ Najlepszy docelowy kierunek:
 
 - requesty `curl` w stylu `whisper.cpp` działają bez zmian ścieżek i podstawowych parametrów;
 - ignorowane parametry nie powodują awarii;
+- pliki audio o różnych sample rate są poprawnie resamplowane do `16 kHz` mono;
 - README i realne zachowanie endpointów są zgodne.
 
 ## Assumptions And Defaults
 
 - Projekt nie ma celu odtworzenia pełnego feature setu `whisper.cpp`; celem jest praktyczna kompatybilność API dla istniejących klientów.
-- `trust_remote_code=True` zostaje domyślną opcją, bo najlepiej odpowiada obecnej implementacji i zmniejsza ryzyko integracyjne.
+- Natywna ścieżka `transformers==5.4.0` jest domyślną i produkcyjną opcją ładowania modelu.
 - GPU pozostaje domyślną preferowaną ścieżką wykonania, ale CPU fallback ma być zachowany.
 - Dockerfile i `compose.yml` pozostają częścią oficjalnego sposobu uruchamiania.
 - Brak repo git nie blokuje implementacji, ale przed dalszym rozwojem warto objąć projekt kontrolą wersji, żeby śledzić zmiany i status.
