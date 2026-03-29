@@ -20,29 +20,17 @@ The main interface is the Wyoming server. `server.py` is still available as a sm
 - GPU is preferred, but CPU fallback is supported
 - `HF_TOKEN` if you are using the gated Hugging Face model
 
-## Environment Setup
-
-Create a local `.env` file from the example:
-
-```bash
-cp .env.example .env
-```
-
-Then set your Hugging Face token in `.env`.
-
-Notes:
-
-- `.env` is ignored by Git and should not be committed
-- the repository is public, so keep real tokens only in your local `.env`
-
 ## Quick Start
 
 ### 1. Install with uv
 
 ```bash
+cp .env.example .env
 UV_CACHE_DIR=/tmp/uv-cache uv venv
 UV_CACHE_DIR=/tmp/uv-cache uv sync
 ```
+
+Set `HF_TOKEN` in `.env` before the first model download.
 
 ### 2. Start the Wyoming server
 
