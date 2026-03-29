@@ -19,7 +19,6 @@ def make_wav_bytes(
     sample_rate: int = 16000,
     channels: int = 1,
 ) -> bytes:
-    """Create a tiny valid WAV fixture for endpoint tests."""
     frames = int(duration_s * sample_rate)
     t = np.arange(frames, dtype=np.float32) / sample_rate
     signal = 0.25 * np.sin(2 * np.pi * 440.0 * t)
@@ -36,8 +35,6 @@ def make_wav_bytes(
 
 
 class FakeUploadFile:
-    """Minimal UploadFile-like object for direct endpoint testing."""
-
     def __init__(self, content: bytes, filename: str = "test.wav") -> None:
         self._content = content
         self.filename = filename
@@ -47,21 +44,36 @@ class FakeUploadFile:
 
 
 def make_upload_file(content: bytes, filename: str = "test.wav") -> FakeUploadFile:
-    """Build a minimal upload object matching handler expectations."""
     return FakeUploadFile(content=content, filename=filename)
 
 
 class CohereTranscribeApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.audio_bytes = make_wav_bytes()
-        self.model_patcher = patch.object(server, "model", object())
-        self.processor_patcher = patch.object(server, "processor", object())
-        self.model_patcher.start()
-        self.processor_patcher.start()
+        self.service_model = patch.object(server.service, "model", object())
+        self.service_processor = patch.object(server.service, "processor", object())
+        self.service_vad = patch.object(
+            server.service.vad_detector,
+            "detect_speech",
+            return_value=SimpleNamespace(
+                has_speech=True,
+                reason="test_override",
+                speech_segments=1,
+                total_speech_ms=100,
+                max_segment_ms=100,
+                speech_rms=0.03,
+                noise_rms=0.002,
+                speech_to_noise_ratio=15.0,
+            ),
+        )
+        self.service_model.start()
+        self.service_processor.start()
+        self.service_vad.start()
 
     def tearDown(self) -> None:
-        self.processor_patcher.stop()
-        self.model_patcher.stop()
+        self.service_vad.stop()
+        self.service_processor.stop()
+        self.service_model.stop()
 
     def run_async(self, coro):
         return asyncio.run(coro)
@@ -98,18 +110,19 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
     def test_index_page_includes_compatibility_notes(self):
         response = self.run_async(server.index())
-
         self.assertIn("Compatibility Notes", response)
         self.assertIn("/inference", response)
         self.assertIn("/health", response)
         self.assertIn("Quick Transcription", response)
         self.assertIn('id="transcribe-form"', response)
         self.assertIn("Language is a hint for the model", response)
+        self.assertIn("Record Voice", response)
+        self.assertIn("source-summary", response)
 
     def test_health_endpoint_reports_ready_state(self):
-        with patch.object(server, "model_id", "CohereLabs/test-model"), \
-             patch.object(server, "device", "cuda:0"), \
-             patch.object(server, "model_backend", "native"):
+        with patch.object(server.service, "model_name", "CohereLabs/test-model"), patch.object(
+            server.service, "device", "cuda:0"
+        ), patch.object(server.service, "backend", "native"):
             response = self.run_async(server.health())
 
         payload = self.decode_json_response(response)
@@ -120,25 +133,27 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(payload["backend"], "native")
 
     def test_inference_returns_json_response(self):
-        with patch.object(server, "transcribe_audio", return_value={
+        with patch.object(server.service, "transcribe_pcm", return_value=SimpleNamespace(asdict=lambda: {
             "text": "hello world",
             "language": "en",
             "duration": 0.1,
             "processing_time": 0.01,
-        }):
+        })):
             response = self.call_inference()
 
         self.assertEqual(self.decode_json_response(response), {"text": "hello world"})
 
     def test_inference_supports_text_verbose_json_srt_and_vtt(self):
-        mocked_result = {
-            "text": "hello world",
-            "language": "en",
-            "duration": 1.25,
-            "processing_time": 0.02,
-        }
+        mocked_result = SimpleNamespace(
+            asdict=lambda: {
+                "text": "hello world",
+                "language": "en",
+                "duration": 1.25,
+                "processing_time": 0.02,
+            }
+        )
 
-        with patch.object(server, "transcribe_audio", return_value=mocked_result):
+        with patch.object(server.service, "transcribe_pcm", return_value=mocked_result):
             text_response = self.call_inference(response_format="text")
             verbose_response = self.call_inference(response_format="verbose_json")
             srt_response = self.call_inference(response_format="srt")
@@ -152,12 +167,15 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertTrue(vtt_response.body.decode("utf-8").startswith("WEBVTT"))
 
     def test_openai_endpoint_returns_verbose_json(self):
-        with patch.object(server, "transcribe_audio", return_value={
-            "text": "openai shape",
-            "language": "pl",
-            "duration": 0.2,
-            "processing_time": 0.03,
-        }):
+        mocked_result = SimpleNamespace(
+            asdict=lambda: {
+                "text": "openai shape",
+                "language": "pl",
+                "duration": 0.2,
+                "processing_time": 0.03,
+            }
+        )
+        with patch.object(server.service, "transcribe_pcm", return_value=mocked_result):
             response = self.call_openai_transcriptions(
                 model_name="ignored-model",
                 response_format="verbose_json",
@@ -168,7 +186,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(payload["segments"][0]["start"], 0.0)
 
     def test_load_endpoint_returns_ok_on_success(self):
-        with patch.object(server, "load_model") as load_model:
+        with patch.object(server.service, "load") as load_model:
             response = self.run_async(server.load(model_path="CohereLabs/mock-model"))
 
         self.assertEqual(
@@ -205,30 +223,37 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(ctx.exception.detail, "bad audio")
 
     def test_unsupported_language_falls_back_to_default_language(self):
-        with patch.object(server, "transcribe_audio", side_effect=lambda audio, sr, language, temperature: {
-            "text": f"lang={language}",
-            "language": language,
-            "duration": 0.1,
-            "processing_time": 0.01,
-        }):
+        with patch.object(server.service, "default_language", "en"), patch.object(
+            server.service, "transcribe_pcm", side_effect=lambda audio, sample_rate, language, temperature: SimpleNamespace(
+                asdict=lambda: {
+                    "text": f"lang={language}",
+                    "language": language,
+                    "duration": 0.1,
+                    "processing_time": 0.01,
+                }
+            )
+        ):
             response = self.call_inference(language="xx")
 
         self.assertEqual(self.decode_json_response(response)["text"], "lang=en")
 
     def test_auto_language_uses_server_default_language(self):
-        with patch.object(server, "default_language", "pl"):
-            with patch.object(server, "transcribe_audio", side_effect=lambda audio, sr, language, temperature: {
-                "text": f"lang={language}",
-                "language": language,
-                "duration": 0.1,
-                "processing_time": 0.01,
-            }):
-                response = self.call_inference(language="auto")
+        with patch.object(server.service, "default_language", "pl"), patch.object(
+            server.service, "transcribe_pcm", side_effect=lambda audio, sample_rate, language, temperature: SimpleNamespace(
+                asdict=lambda: {
+                    "text": f"lang={language}",
+                    "language": language,
+                    "duration": 0.1,
+                    "processing_time": 0.01,
+                }
+            )
+        ):
+            response = self.call_inference(language="auto")
 
         self.assertEqual(self.decode_json_response(response)["text"], "lang=pl")
 
     def test_missing_model_returns_503(self):
-        with patch.object(server, "model", None), patch.object(server, "processor", None):
+        with patch.object(server.service, "model", None), patch.object(server.service, "processor", None):
             with self.assertRaises(HTTPException) as ctx:
                 self.call_inference()
 
@@ -236,7 +261,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertEqual(ctx.exception.detail, "Model not loaded")
 
     def test_transcription_failure_returns_500(self):
-        with patch.object(server, "transcribe_audio", side_effect=RuntimeError("boom")):
+        with patch.object(server.service, "transcribe_pcm", side_effect=RuntimeError("boom")):
             with self.assertRaises(HTTPException) as ctx:
                 self.call_inference()
 
@@ -244,7 +269,7 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertIn("Transcription failed: boom", ctx.exception.detail)
 
     def test_load_failure_returns_500(self):
-        with patch.object(server, "load_model", side_effect=RuntimeError("cannot load")):
+        with patch.object(server.service, "load", side_effect=RuntimeError("cannot load")):
             with self.assertRaises(HTTPException) as ctx:
                 self.run_async(server.load(model_path="broken-model"))
 
@@ -252,12 +277,15 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertIn("Failed to load model: cannot load", ctx.exception.detail)
 
     def test_compatibility_only_parameters_do_not_break_inference(self):
-        with patch.object(server, "transcribe_audio", return_value={
-            "text": "compat ok",
-            "language": "en",
-            "duration": 0.1,
-            "processing_time": 0.01,
-        }):
+        mocked_result = SimpleNamespace(
+            asdict=lambda: {
+                "text": "compat ok",
+                "language": "en",
+                "duration": 0.1,
+                "processing_time": 0.01,
+            }
+        )
+        with patch.object(server.service, "transcribe_pcm", return_value=mocked_result):
             response = self.call_inference(
                 temperature_inc=0.5,
                 prompt="hello",
@@ -315,15 +343,35 @@ class CohereTranscribeApiTests(unittest.TestCase):
         fake_model = FakeModel()
         fake_processor = FakeProcessor()
 
-        with patch.object(server, "model", fake_model), patch.object(server, "processor", fake_processor):
-            server.transcribe_audio(np.zeros(1600, dtype=np.float32), 16000, "pl", 0.0)
-            server.transcribe_audio(np.zeros(1600, dtype=np.float32), 16000, "pl", 0.7)
+        with patch.object(server.service, "model", fake_model), patch.object(
+            server.service, "processor", fake_processor
+        ):
+            audio = np.full(1600, 0.2, dtype=np.float32)
+            server.service.transcribe_pcm(audio, sample_rate=16000, language="pl", temperature=0.0)
+            server.service.transcribe_pcm(audio, sample_rate=16000, language="pl", temperature=0.7)
 
         greedy_call, sampling_call = fake_model.calls
         self.assertFalse(greedy_call["do_sample"])
         self.assertNotIn("temperature", greedy_call)
         self.assertTrue(sampling_call["do_sample"])
         self.assertEqual(sampling_call["temperature"], 0.7)
+
+    def test_silent_audio_returns_empty_transcription_without_model_call(self):
+        silent_audio = np.zeros(16000, dtype=np.float32)
+
+        with patch.object(server, "transcribe_audio") as transcribe_audio:
+            result = server.run_transcription_request(
+                audio_data=silent_audio,
+                sr=16000,
+                language="pl",
+                temperature=0.0,
+            )
+
+        self.assertEqual(result["text"], "")
+        self.assertEqual(result["language"], "pl")
+        self.assertEqual(result["duration"], 1.0)
+        self.assertEqual(result["processing_time"], 0.0)
+        transcribe_audio.assert_not_called()
 
     def test_cli_no_longer_exposes_trust_remote_code_flags(self):
         argv = ["server.py"]
@@ -338,17 +386,20 @@ class CohereTranscribeApiTests(unittest.TestCase):
         old_processor = object()
         old_device = object()
 
-        with patch.object(server, "model", old_model), \
-             patch.object(server, "processor", old_processor), \
-             patch.object(server, "device", old_device), \
-             patch("transformers.AutoProcessor.from_pretrained", return_value=object()), \
-             patch("transformers.AutoModelForSpeechSeq2Seq.from_pretrained", side_effect=RuntimeError("load failed")):
+        with patch.object(server.service, "model", old_model), patch.object(
+            server.service, "processor", old_processor
+        ), patch.object(server.service, "device", old_device), patch(
+            "transformers.AutoProcessor.from_pretrained", return_value=object()
+        ), patch(
+            "transformers.AutoModelForSpeechSeq2Seq.from_pretrained",
+            side_effect=RuntimeError("load failed"),
+        ):
             with self.assertRaises(RuntimeError):
-                server.load_model("broken-model")
+                server.service.load("broken-model")
 
-            self.assertIs(server.model, old_model)
-            self.assertIs(server.processor, old_processor)
-            self.assertIs(server.device, old_device)
+            self.assertIs(server.service.model, old_model)
+            self.assertIs(server.service.processor, old_processor)
+            self.assertIs(server.service.device, old_device)
 
 
 if __name__ == "__main__":

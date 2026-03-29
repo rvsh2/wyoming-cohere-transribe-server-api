@@ -8,23 +8,24 @@ RUN apt-get update && apt-get install -y \
     libsndfile1 ffmpeg curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN uv venv /app/.venv && \
-    VIRTUAL_ENV=/app/.venv uv pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 && \
-    VIRTUAL_ENV=/app/.venv uv pip install -r requirements.txt
+COPY pyproject.toml uv.lock README.md ./
+COPY cohere_wyoming ./cohere_wyoming
+COPY server.py ./server.py
+COPY templates ./templates
+
+RUN uv venv --python 3.11 /app/.venv && \
+    UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu124 \
+    VIRTUAL_ENV=/app/.venv uv sync --locked --no-dev
 
 ENV PATH="/app/.venv/bin:${PATH}"
 ENV VIRTUAL_ENV="/app/.venv"
 
-COPY server.py .
+EXPOSE 10300
 
-EXPOSE 8080
-
-ENTRYPOINT ["python3", "server.py"]
-CMD ["--host", "0.0.0.0", "--port", "8080"]
+ENTRYPOINT ["python3", "-m", "cohere_wyoming"]
+CMD ["--uri", "tcp://0.0.0.0:10300", "--language", "pl"]

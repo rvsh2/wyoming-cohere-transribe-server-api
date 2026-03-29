@@ -1,28 +1,31 @@
 services:
-  cohere-transcribe-server-api:
-    image: cohere-transcribe-server-api:latest
+  wyoming-transcribe:
+    image: wyoming-transcribe:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cohere-transcribe-server-api
+    container_name: wyoming-transcribe
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "0.0.0.0:10300:10300"
     networks:
       - bridge-network
     volumes:
-      - /opt/cohere-transcribe/data:/root/.cache/huggingface
+      - /opt/wyoming-transcribe/data:/root/.cache/huggingface
     environment:
       - HF_HOME=/root/.cache/huggingface
       - HF_TOKEN=${HF_TOKEN:-}
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
       - NVIDIA_VISIBLE_DEVICES=all
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      - VAD_ENABLED=true
+      - VAD_THRESHOLD=0.54
+      - VAD_MIN_SPEECH_DURATION_MS=180
+      - VAD_MIN_SILENCE_DURATION_MS=120
+      - VAD_SPEECH_PAD_MS=50
+      - VAD_MIN_TOTAL_SPEECH_MS=70
+      - VAD_MIN_MAX_SEGMENT_MS=45
+      - VAD_MIN_SPEECH_RMS=0.014
+      - VAD_MIN_SPEECH_TO_NOISE_RATIO=2.6
     deploy:
       resources:
         reservations:
@@ -30,7 +33,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    command: ["--host", "0.0.0.0", "--port", "8080", "--language", "pl"]
+    command: ["--uri", "tcp://0.0.0.0:10300", "--language", "pl"]
 
 networks:
   bridge-network:
