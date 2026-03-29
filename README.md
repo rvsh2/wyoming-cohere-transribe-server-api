@@ -79,7 +79,7 @@ Typical setup:
 
 1. Start the Wyoming server.
 2. Add it in Home Assistant as an external Wyoming ASR service.
-3. Use a URI like `tcp://host:10300`.
+3. In Home Assistant, enter the host and port `10300`.
 
 Currently supported events:
 
