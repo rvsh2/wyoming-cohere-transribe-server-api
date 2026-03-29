@@ -10,6 +10,7 @@ The project is aimed at practical API compatibility for existing `whisper.cpp` c
 - `POST /v1/audio/transcriptions` for OpenAI-like clients
 - `POST /load` for hot-reloading the model
 - `GET /` for a small status and compatibility page
+- `GET /health` for liveness and readiness checks
 - Docker and Compose workflows for containerized startup
 - Automated endpoint-level API tests with a mocked transcription layer
 
@@ -117,16 +118,70 @@ curl http://127.0.0.1:8080/v1/audio/transcriptions \
 
 ### `POST /load`
 
-Reload the model at runtime.
+Administrative endpoint for hot-reloading the active model without restarting the server.
+
+Typical uses:
+
+- reload the same model after cache or credential changes
+- switch to another Hugging Face model ID
+- switch to a compatible local model path mounted into the container
+
+Request:
+
+| Parameter | Type | Default | Notes |
+|-----------|------|---------|-------|
+| `model` | string | required | Hugging Face model ID or local path to a compatible checkpoint |
 
 ```bash
 curl http://127.0.0.1:8080/load \
   -F model="CohereLabs/cohere-transcribe-03-2026"
 ```
 
+Example response:
+
+```json
+{
+  "status": "ok",
+  "model": "CohereLabs/cohere-transcribe-03-2026"
+}
+```
+
+If loading fails, the endpoint returns `500` and the server keeps the previously loaded model active.
+
 ### `GET /`
 
-Returns a small HTML status page with endpoints, device/model info, and compatibility notes.
+Returns a small HTML status page with endpoints, device/model info, compatibility notes, and a built-in `Quick Transcription` upload form.
+
+The frontend lets you:
+
+- upload an audio file directly from the browser
+- choose the transcription language from the supported list
+- send the request without using `curl`
+- view the transcribed text immediately on the page
+
+The upload form sends the audio to the same backend used by `POST /inference`.
+
+Open it in the browser:
+
+```text
+http://127.0.0.1:8080/
+```
+
+### `GET /health`
+
+Returns a JSON health payload for load balancers and Docker health checks.
+
+Example response:
+
+```json
+{
+  "status": "ok",
+  "ready": true,
+  "model": "CohereLabs/cohere-transcribe-03-2026",
+  "device": "cuda:0",
+  "backend": "native"
+}
+```
 
 ## Compatibility Matrix
 
@@ -215,6 +270,7 @@ python -m unittest discover -s tests -v
 docker compose ps
 docker compose logs -f cohere-transcribe
 curl http://127.0.0.1:8080/
+curl http://127.0.0.1:8080/health
 ```
 
 ## Operational Notes
