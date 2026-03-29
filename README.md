@@ -1,6 +1,8 @@
 # wyoming-transcribe
 
-ASR server for Home Assistant built around the Wyoming protocol and the `CohereLabs/cohere-transcribe-03-2026` model.
+Speech recognition server for Home Assistant built around the Wyoming protocol and the `CohereLabs/cohere-transcribe-03-2026` model.
+
+In practice, this is a self-hosted speech-to-text service in the same general category as Whisper-based setups, but using Cohere Transcribe instead.
 
 The main interface is the Wyoming server. `server.py` is still available as a small HTTP debug server with basic `whisper.cpp`-style compatibility.
 
