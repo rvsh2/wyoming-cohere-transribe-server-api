@@ -78,7 +78,7 @@ The Docker image uses `uv.lock`, so builds stay aligned with the locked dependen
 Typical setup:
 
 1. Start the Wyoming server.
-2. Add it in Home Assistant as an external Wyoming ASR service.
+2. Add it in Home Assistant through the `Wyoming Protocol` integration.
 3. In Home Assistant, enter the host and port `10300`.
 
 Currently supported events:
