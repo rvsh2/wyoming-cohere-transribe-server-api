@@ -167,6 +167,10 @@ Open it in the browser:
 http://127.0.0.1:8080/
 ```
 
+Frontend preview:
+
+![Frontend preview](docs/frontend-home.png)
+
 ### `GET /health`
 
 Returns a JSON health payload for load balancers and Docker health checks.
