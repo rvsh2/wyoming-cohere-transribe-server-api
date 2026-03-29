@@ -4,10 +4,12 @@ import json
 import sys
 import unittest
 import wave
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
 import numpy as np
+import torch
 
 import server
 
@@ -99,6 +101,23 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         self.assertIn("Compatibility Notes", response)
         self.assertIn("/inference", response)
+        self.assertIn("/health", response)
+        self.assertIn("Quick Transcription", response)
+        self.assertIn('id="transcribe-form"', response)
+        self.assertIn("Language is a hint for the model", response)
+
+    def test_health_endpoint_reports_ready_state(self):
+        with patch.object(server, "model_id", "CohereLabs/test-model"), \
+             patch.object(server, "device", "cuda:0"), \
+             patch.object(server, "model_backend", "native"):
+            response = self.run_async(server.health())
+
+        payload = self.decode_json_response(response)
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["ready"])
+        self.assertEqual(payload["model"], "CohereLabs/test-model")
+        self.assertEqual(payload["device"], "cuda:0")
+        self.assertEqual(payload["backend"], "native")
 
     def test_inference_returns_json_response(self):
         with patch.object(server, "transcribe_audio", return_value={
@@ -196,6 +215,18 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         self.assertEqual(self.decode_json_response(response)["text"], "lang=en")
 
+    def test_auto_language_uses_server_default_language(self):
+        with patch.object(server, "default_language", "pl"):
+            with patch.object(server, "transcribe_audio", side_effect=lambda audio, sr, language, temperature: {
+                "text": f"lang={language}",
+                "language": language,
+                "duration": 0.1,
+                "processing_time": 0.01,
+            }):
+                response = self.call_inference(language="auto")
+
+        self.assertEqual(self.decode_json_response(response)["text"], "lang=pl")
+
     def test_missing_model_returns_503(self):
         with patch.object(server, "model", None), patch.object(server, "processor", None):
             with self.assertRaises(HTTPException) as ctx:
@@ -251,6 +282,49 @@ class CohereTranscribeApiTests(unittest.TestCase):
         self.assertGreater(len(stereo_audio), 0)
         self.assertGreater(len(mono_audio), 0)
 
+    def test_temperature_controls_generate_sampling(self):
+        fake_inputs = {
+            "audio_chunk_index": None,
+            "input_features": SimpleNamespace(),
+        }
+
+        class FakeBatch(dict):
+            def to(self, device, dtype=None):
+                return self
+
+        fake_inputs = FakeBatch(fake_inputs)
+
+        class FakeModel:
+            device = "cpu"
+            dtype = torch.float32
+
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, **kwargs):
+                self.calls.append(kwargs)
+                return "tokens"
+
+        class FakeProcessor:
+            def __call__(self, *args, **kwargs):
+                return fake_inputs
+
+            def decode(self, *args, **kwargs):
+                return "decoded"
+
+        fake_model = FakeModel()
+        fake_processor = FakeProcessor()
+
+        with patch.object(server, "model", fake_model), patch.object(server, "processor", fake_processor):
+            server.transcribe_audio(np.zeros(1600, dtype=np.float32), 16000, "pl", 0.0)
+            server.transcribe_audio(np.zeros(1600, dtype=np.float32), 16000, "pl", 0.7)
+
+        greedy_call, sampling_call = fake_model.calls
+        self.assertFalse(greedy_call["do_sample"])
+        self.assertNotIn("temperature", greedy_call)
+        self.assertTrue(sampling_call["do_sample"])
+        self.assertEqual(sampling_call["temperature"], 0.7)
+
     def test_cli_no_longer_exposes_trust_remote_code_flags(self):
         argv = ["server.py"]
         with patch.object(sys, "argv", argv):
@@ -258,6 +332,23 @@ class CohereTranscribeApiTests(unittest.TestCase):
 
         self.assertFalse(hasattr(args, "trust_remote_code"))
         self.assertFalse(hasattr(args, "no_trust_remote_code"))
+
+    def test_load_model_only_swaps_globals_after_successful_load(self):
+        old_model = object()
+        old_processor = object()
+        old_device = object()
+
+        with patch.object(server, "model", old_model), \
+             patch.object(server, "processor", old_processor), \
+             patch.object(server, "device", old_device), \
+             patch("transformers.AutoProcessor.from_pretrained", return_value=object()), \
+             patch("transformers.AutoModelForSpeechSeq2Seq.from_pretrained", side_effect=RuntimeError("load failed")):
+            with self.assertRaises(RuntimeError):
+                server.load_model("broken-model")
+
+            self.assertIs(server.model, old_model)
+            self.assertIs(server.processor, old_processor)
+            self.assertIs(server.device, old_device)
 
 
 if __name__ == "__main__":

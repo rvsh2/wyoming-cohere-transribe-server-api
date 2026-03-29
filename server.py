@@ -66,7 +66,6 @@ LANGUAGE_ALIASES = {
     "spanish": "es", "portuguese": "pt", "greek": "el", "dutch": "nl",
     "polish": "pl", "chinese": "zh", "japanese": "ja", "korean": "ko",
     "vietnamese": "vi", "arabic": "ar",
-    "auto": "en",  # Cohere doesn't support auto-detect, default to English
 }
 
 
@@ -77,27 +76,30 @@ def load_model(model_name: str):
     """Load the Cohere Transcribe model and processor."""
     global model, processor, device, model_id, model_backend
 
-    model_id = model_name
-    model_backend = "native"
-
-    logger.info(f"Loading model: {model_name} (backend={model_backend})")
+    logger.info(f"Loading model: {model_name} (backend=native)")
     start = time.time()
 
     # Determine device
     if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+        next_device = torch.device("cuda:0")
         logger.info(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
     else:
-        device = torch.device("cpu")
+        next_device = torch.device("cpu")
         logger.info("Using CPU device")
 
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
-    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=False)
-    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+    next_processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=False)
+    next_model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_name, trust_remote_code=False
-    ).to(device)
-    model.eval()
+    ).to(next_device)
+    next_model.eval()
+
+    model_id = model_name
+    model_backend = "native"
+    device = next_device
+    processor = next_processor
+    model = next_model
 
     elapsed = time.time() - start
     logger.info(f"Model loaded in {elapsed:.1f}s using backend={model_backend}")
@@ -163,6 +165,9 @@ def resolve_language(lang: Optional[str]) -> str:
         return default_language
 
     lang = lang.strip().lower()
+
+    if lang == "auto":
+        return default_language
 
     # Check aliases (e.g. "english" -> "en")
     if lang in LANGUAGE_ALIASES:
@@ -296,6 +301,18 @@ def format_openai_response(response_format: str, result: dict):
     return JSONResponse({"text": text})
 
 
+def health_payload() -> dict:
+    """Return the current service health snapshot."""
+    ready = model is not None and processor is not None
+    return {
+        "status": "ok" if ready else "loading",
+        "ready": ready,
+        "model": model_id or None,
+        "device": str(device) if device is not None else None,
+        "backend": model_backend,
+    }
+
+
 def run_transcription_request(
     *,
     audio_data: np.ndarray,
@@ -343,8 +360,15 @@ def transcribe_audio(
     audio_chunk_index = inputs.get("audio_chunk_index", None)
     inputs.to(model.device, dtype=model.dtype)
 
+    generate_kwargs = {"max_new_tokens": 256}
+    if temperature > 0:
+        generate_kwargs["do_sample"] = True
+        generate_kwargs["temperature"] = temperature
+    else:
+        generate_kwargs["do_sample"] = False
+
     with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=256)
+        outputs = model.generate(**inputs, **generate_kwargs)
 
     if audio_chunk_index is not None:
         text = processor.decode(
@@ -449,6 +473,48 @@ async def index():
             border-radius: 20px; font-size: 0.8rem; color: #7f5af0;
             margin: 2px 4px;
         }}
+        .transcribe-form {{
+            display: grid;
+            gap: 1rem;
+        }}
+        .form-row {{
+            display: grid;
+            gap: 0.5rem;
+        }}
+        label {{
+            font-weight: 600;
+            color: #fffffe;
+        }}
+        input[type="file"], select {{
+            width: 100%;
+            padding: 0.9rem 1rem;
+            background: rgba(0,0,0,0.25);
+            color: #fffffe;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+        }}
+        button {{
+            border: 0;
+            border-radius: 999px;
+            padding: 0.95rem 1.4rem;
+            background: linear-gradient(135deg, #7f5af0, #2cb67d);
+            color: #fffffe;
+            font-weight: 700;
+            cursor: pointer;
+        }}
+        button:disabled {{
+            opacity: 0.6;
+            cursor: wait;
+        }}
+        .hint {{
+            color: #94a1b2;
+            font-size: 0.92rem;
+        }}
+        .result {{
+            min-height: 96px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }}
         .status {{ color: #2cb67d; font-weight: 600; }}
     </style>
 </head>
@@ -477,6 +543,32 @@ async def index():
         <p><code>POST /inference</code> — whisper.cpp compatible</p>
         <p><code>POST /v1/audio/transcriptions</code> — OpenAI compatible</p>
         <p><code>POST /load</code> — hot-reload model</p>
+        <p><code>GET /health</code> — readiness and liveness check</p>
+    </div>
+
+    <div class="card">
+        <h2>🎧 Quick Transcription</h2>
+        <form id="transcribe-form" class="transcribe-form">
+            <div class="form-row">
+                <label for="audio-file">Audio File</label>
+                <input id="audio-file" name="file" type="file" accept="audio/*" required>
+            </div>
+            <div class="form-row">
+                <label for="language">Language</label>
+                <select id="language" name="language">
+                    {"".join(
+                        f'<option value="{lang}"{" selected" if lang == default_language else ""}>{lang}</option>'
+                        for lang in sorted(SUPPORTED_LANGUAGES)
+                    )}
+                </select>
+                <div class="hint">Language is a hint for the model. Clear audio may still transcribe correctly even if a different language is selected.</div>
+            </div>
+            <button id="submit-button" type="submit">Transcribe</button>
+        </form>
+        <div class="form-row" style="margin-top: 1rem;">
+            <label for="transcription-result">Result</label>
+            <pre id="transcription-result" class="result"><code>Choose an audio file and click Transcribe.</code></pre>
+        </div>
     </div>
 
     <div class="card">
@@ -494,8 +586,60 @@ async def index():
   -F language="en"</code></pre>
     </div>
 </div>
+<script>
+const form = document.getElementById("transcribe-form");
+const button = document.getElementById("submit-button");
+const result = document.getElementById("transcription-result");
+
+form.addEventListener("submit", async (event) => {{
+    event.preventDefault();
+
+    const fileInput = document.getElementById("audio-file");
+    const languageInput = document.getElementById("language");
+
+    if (!fileInput.files.length) {{
+        result.textContent = "Please choose an audio file first.";
+        return;
+    }}
+
+    const formData = new FormData();
+    formData.append("file", fileInput.files[0]);
+    formData.append("language", languageInput.value);
+    formData.append("response_format", "json");
+    formData.append("temperature", "0.0");
+
+    button.disabled = true;
+    button.textContent = "Transcribing...";
+    result.textContent = "Processing audio...";
+
+    try {{
+        const response = await fetch("/inference", {{
+            method: "POST",
+            body: formData,
+        }});
+        const payload = await response.json();
+
+        if (!response.ok) {{
+            throw new Error(payload.detail || "Transcription failed");
+        }}
+
+        result.textContent = payload.text || "";
+    }} catch (error) {{
+        result.textContent = `Error: ${{error.message}}`;
+    }} finally {{
+        button.disabled = false;
+        button.textContent = "Transcribe";
+    }}
+}});
+</script>
 </body>
 </html>"""
+
+
+@app.get("/health")
+async def health():
+    """Container-friendly liveness/readiness endpoint."""
+    return JSONResponse(health_payload())
 
 
 # ---------------------------------------------------------------------------
