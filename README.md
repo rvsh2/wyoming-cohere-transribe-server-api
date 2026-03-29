@@ -20,6 +20,21 @@ The main interface is the Wyoming server. `server.py` is still available as a sm
 - GPU is preferred, but CPU fallback is supported
 - `HF_TOKEN` if you are using the gated Hugging Face model
 
+## Environment Setup
+
+Create a local `.env` file from the example:
+
+```bash
+cp .env.example .env
+```
+
+Then set your Hugging Face token in `.env`.
+
+Notes:
+
+- `.env` is ignored by Git and should not be committed
+- the repository is public, so keep real tokens only in your local `.env`
+
 ## Quick Start
 
 ### 1. Install with uv
@@ -158,6 +173,16 @@ Practical tuning guidance:
 UV_CACHE_DIR=/tmp/uv-cache uv run python -m unittest discover -s tests
 ```
 
+HTTP smoke test script:
+
+```bash
+tests/test_api.sh
+```
+
 ## Reference
 
 - `wyoming-faster-whisper`: https://github.com/rhasspy/wyoming-faster-whisper
+
+## License
+
+This repository is licensed under the Apache License 2.0.

@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.example
+.venv
+__pycache__/
+*.pyc
+.pytest_cache/
+data/
+Recording*.wav
+*.egg-info/
+memory.md
+implementation_plan.md
+docs/
